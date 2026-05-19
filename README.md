@@ -2,6 +2,10 @@
 
 JustDraw Blueprint AI is a Flutter application that transforms your hand-drawn sketches into professional-looking architectural or technical blueprints using Google's Gemini AI.
 
+## 📺 Demo
+
+[Watch it demo](https://www.loom.com/share/8a5ec5f63bb941ed9323e1166077b00e)
+
 ## How It Works
 
 The application follows a simple two-step AI transformation process:
