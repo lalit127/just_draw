@@ -58,9 +58,9 @@ class BlueprintState {
   String get stepLabel {
     switch (step) {
       case GenerationStep.analysing:
-        return 'Analysing your sketch…';
+        return 'Reading your hand-drawn sketch…';
       case GenerationStep.generating:
-        return 'Generating blueprint…';
+        return 'Drawing professional floor plan…';
       case GenerationStep.done:
         return 'Blueprint ready!';
       case GenerationStep.error:
@@ -100,6 +100,7 @@ class BlueprintNotifier extends StateNotifier<BlueprintState> {
       state = state.copyWith(step: GenerationStep.generating);
       final imageBytes = await _service.generateBlueprintImage(
         analysis.blueprintPrompt,
+        sketchFile: sketch,
       );
 
       state = state.copyWith(
@@ -107,9 +108,30 @@ class BlueprintNotifier extends StateNotifier<BlueprintState> {
         step: GenerationStep.done,
       );
     } catch (e) {
+      String message = e.toString().replaceFirst('Exception: ', '');
+      if (message.contains('404') || message.toLowerCase().contains('not found')) {
+        message =
+            'Image models unavailable on this API key. Enable billing in Google AI Studio for Imagen/Gemini image generation.';
+      } else if (message.contains('503') ||
+          message.toLowerCase().contains('unavailable')) {
+        message = 'AI service temporarily unavailable. Please try again in a minute.';
+      } else if (message.contains('429') || message.toLowerCase().contains('quota')) {
+        message = 'AI quota exceeded. Please wait a moment and try again.';
+      } else if (message.toLowerCase().contains('billing')) {
+        message =
+            'Image generation requires billing on your Gemini API key (Google AI Studio).';
+      } else if (message.toLowerCase().contains('api key') || message.contains('401')) {
+        message = 'Invalid API key. Check your GEMINI_API_KEY in .env file.';
+      } else if (message.toLowerCase().contains('json') || message.toLowerCase().contains('parse')) {
+        message = 'Could not read AI response. Try again with a clearer photo.';
+      } else if (message.toLowerCase().contains('timeout') || message.toLowerCase().contains('network')) {
+        message = 'Network timeout. Check your connection and try again.';
+      } else if (message.length > 220) {
+        message = message.substring(0, 220) + '…';
+      }
       state = state.copyWith(
         step: GenerationStep.error,
-        errorMessage: e.toString().replaceFirst('Exception: ', ''),
+        errorMessage: message,
       );
     }
   }

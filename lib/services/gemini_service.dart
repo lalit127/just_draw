@@ -2,354 +2,98 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
-import 'package:just_draw/models/blueprint_result.dart';
+import '../models/blueprint_result.dart';
 
 class GeminiService {
   final String apiKey;
   static const String _baseUrl =
       'https://generativelanguage.googleapis.com/v1beta';
 
+  /// Text + vision analysis of hand-drawn sketches.
+  static const String analysisModel = 'gemini-2.5-flash';
+
+  /// All image generation (floor plans, 3D renders) via Imagen 4.
+  static const String imagenModel = 'imagen-4.0-generate-001';
+  static const String imagenModelFast = 'imagen-4.0-fast-generate-001';
+
+  static const List<String> _imagenModels = [imagenModel, imagenModelFast];
+
   final Dio _dio;
 
   GeminiService({required this.apiKey})
-    : _dio = Dio(
-        BaseOptions(
-          connectTimeout: const Duration(seconds: 60),
-          receiveTimeout: const Duration(seconds: 120),
-          sendTimeout: const Duration(seconds: 60),
-        ),
-      ) {
-    _dio.interceptors.add(
-      LogInterceptor(requestBody: false, responseBody: false, error: true),
-    );
-  }
+      : _dio = Dio(
+          BaseOptions(
+            connectTimeout: const Duration(seconds: 60),
+            receiveTimeout: const Duration(seconds: 180),
+            sendTimeout: const Duration(seconds: 60),
+          ),
+        );
 
-  /// Step 1: Analyse the sketch and extract measurements + description
+  // ─────────────────────────────────────────────────────────────────
+  // BLUEPRINT ANALYSIS — robust JSON extraction with retry fallback
+  // ─────────────────────────────────────────────────────────────────
+
   Future<BlueprintAnalysis> analyseSketch(File imageFile) async {
-    if (apiKey.isEmpty || apiKey == 'YOUR_GEMINI_API_KEY') {
-      throw Exception('Please enter a valid Gemini API Key first.');
-    }
+    _assertApiKey();
 
     final bytes = await imageFile.readAsBytes();
     final base64Image = base64Encode(bytes);
     final mimeType = _getMimeType(imageFile.path);
 
-    final prompt = r'''
-You are a senior architectural CAD engineer, floor-plan reconstruction specialist, and spatial-consistency AI.
+    // ── Step 1: Analyse the hand-drawn sketch with Gemini Flash ──────────────
+    const prompt = r'''
+You are an expert kitchen designer and architectural CAD engineer. Analyse this HAND-DRAWN kitchen sketch carefully.
 
-Your task is to analyse a hand-drawn floor-plan sketch and generate a STRICTLY ACCURATE architectural blueprint description for AI image generation.
+The user wants a professional 2D architectural floor plan output like a real interior-design proposal:
+- Title "KITCHEN FLOOR PLAN" at top center
+- Overall dimensions on top and right edges (e.g. 14'-0" × 12'-0")
+- North compass rose bottom-left, scale "1/2" = 1'-0""
+- Thick dark grey walls, tan horizontal wood-plank flooring
+- Light speckled cream/quartz countertops on all cabinet runs
+- Uppercase labels: DISHWASHER, SINK, REFRIGERATOR, RANGE, ISLAND, PANTRY
+- Double-bowl sink symbol, 5-6 burner range, fridge rectangle, window above sink
+- Dashed work triangle connecting sink, refrigerator, and range
+- Door swing arcs, bar stools at island
 
-The final result MUST look like a digitally redrawn CAD version of the SAME sketch — not a redesigned interpretation.
+Respond with ONLY valid JSON. No markdown, no backticks.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CORE OBJECTIVE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-You MUST preserve:
-- exact room placement
-- exact wall placement
-- exact room adjacency
-- exact circulation flow
-- exact orientation
-- exact entrance positions
-- exact proportions
-
-The generated blueprint MUST visually match the original sketch layout.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CRITICAL NON-NEGOTIABLE RULES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-NEVER:
-- mirror the layout
-- rotate the layout
-- flip horizontally
-- flip vertically
-- redesign architecture
-- optimize room arrangement
-- improve circulation
-- add modern design changes
-- invent missing rooms
-- merge spaces
-- split spaces
-- reinterpret unclear rooms creatively
-
-ALWAYS:
-- preserve original structure
-- preserve original spatial hierarchy
-- preserve room relationships
-- preserve room scale proportions
-- preserve all visible openings
-- preserve all visible furniture placement
-
-If a room is:
-- top-left → keep top-left
-- top-right → keep top-right
-- bottom-left → keep bottom-left
-- bottom-right → keep bottom-right
-- center → keep center
-
-If two rooms touch in sketch:
-they MUST touch in final blueprint.
-
-If a door connects two rooms:
-the same connection MUST remain.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MANDATORY INTERNAL ANALYSIS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-STEP 1 — GLOBAL ORIENTATION
-
-Determine:
-- top boundary
-- bottom boundary
-- left boundary
-- right boundary
-
-Divide sketch into:
-- top-left
-- top-center
-- top-right
-- center-left
-- center-center
-- center-right
-- bottom-left
-- bottom-center
-- bottom-right
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-STEP 2 — DETECT ALL ELEMENTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Identify ALL visible:
-
-ROOMS:
-- bedroom
-- bathroom
-- kitchen
-- living room
-- dining
-- office
-- hallway
-- garage
-- utility
-- stairs
-- balcony
-- patio
-- storage
-- lobby
-
-STRUCTURAL ITEMS:
-- walls
-- windows
-- doors
-- openings
-- columns
-- exterior borders
-
-VISUAL ITEMS:
-- bed
-- sink
-- toilet
-- cooktop
-- sofa
-- table
-- furniture
-- labels
-- arrows
-- dimensions
-- notes
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-STEP 3 — SPATIAL MAPPING
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-For EVERY room/space determine:
-- exact position zone
-- room above
-- room below
-- room left
-- room right
-- shared walls
-- connected doors
-- nearby openings
-- relative scale
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-STEP 4 — PROPORTION PRESERVATION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Preserve proportions exactly:
-- large rooms remain large
-- narrow hallways remain narrow
-- compact bathrooms remain compact
-
-Do NOT normalize room sizes.
-
-Maintain sketch proportions even if imperfect.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-STEP 5 — BLUEPRINT PROMPT GENERATION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-The generated "blueprint_prompt" MUST be EXTREMELY detailed.
-
-It MUST:
-- describe EVERY room position
-- describe EVERY adjacency relationship
-- describe EVERY door location
-- describe EVERY window location
-- describe circulation flow
-- describe wall continuity
-- describe furniture placement
-- describe orientation precisely
-- describe exterior boundaries
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MANDATORY BLUEPRINT INSTRUCTIONS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-The blueprint_prompt MUST contain ALL EXACT phrases below:
-
-"Maintain the exact same spatial arrangement as the original sketch."
-
-"Do not mirror, rotate, flip, reinterpret, redesign, or optimize the layout."
-
-"Preserve all room positions exactly as identified."
-
-"Maintain accurate adjacency relationships between all rooms."
-
-"Preserve original circulation flow and wall continuity."
-
-"Generate as a professional 2D CAD architectural floor plan."
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-STYLE ENFORCEMENT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-The blueprint_prompt MUST also contain:
-
-"Clean white background."
-
-"Sharp black CAD drafting lines."
-
-"Professional architectural blueprint style."
-
-"Perfect straight technical wall lines."
-
-"Minimal modern CAD rendering."
-
-"All room labels must use a clean sans-serif font such as Arial or Helvetica."
-
-"Absolutely no handwriting, sketch texture, paper texture, shadows, pencil marks, scribbles, artistic rendering, watercolor effects, or decorative styling."
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ANTI-HALLUCINATION PROTECTION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-- Do NOT invent missing rooms.
-- Do NOT invent dimensions.
-- Do NOT hallucinate architectural details.
-- Preserve ambiguity if sketch is unclear.
-- If uncertain, describe as:
-  - "possible storage area"
-  - "uncertain small room"
-
-Prefer uncertainty over fabrication.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MEASUREMENT RULES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-If dimensions are visible:
-- extract EXACT values
-
-If dimensions are missing:
-- estimate proportionally
-
-Clearly specify:
-- estimated
-- approximate
-- marked dimensions
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-IMAGE GENERATION OPTIMIZATION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-The blueprint_prompt should be optimized for:
-- Imagen
-- DALL·E
-- Stable Diffusion
-- Flux
-- Midjourney
-- CAD-style rendering systems
-
-Use highly explicit spatial language.
-
-Example:
-- "Bedroom occupies top-left and top-center region."
-- "Bathroom positioned bottom-left directly below bedroom."
-- "Kitchen occupies bottom-right region with vertical counter along right wall."
-- "Main entrance centered on bottom wall opening into kitchen."
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-STRICT OUTPUT FORMAT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Return ONLY valid JSON.
-
-NO markdown.
-NO code fences.
-NO explanations.
-NO commentary.
-NO extra text.
-
-Use EXACT schema:
-
+Schema:
 {
-  "title": "Short title max 5 words",
-  "description": "Concise overview max 15 words",
+  "title": "Kitchen Floor Plan",
+  "description": "Brief summary",
+  "kitchen_shape": "u-shape",
+  "width_ft": "14",
+  "depth_ft": "12",
   "measurements": [
-    {
-      "label": "Overall Width",
-      "value": "value",
-      "unit": "m or cm or ft"
-    },
-    {
-      "label": "Overall Height",
-      "value": "value",
-      "unit": "m or cm or ft"
-    }
+    {"label": "Overall Width", "value": "14", "unit": "ft"},
+    {"label": "Overall Depth", "value": "12", "unit": "ft"}
   ],
-  "elements": [
-    "visible",
-    "structural",
-    "elements"
-  ],
-  "blueprint_prompt": "Extremely detailed CAD generation prompt with locked room positions and strict spatial preservation."
+  "elements": ["sink", "dishwasher", "refrigerator", "range", "island", "pantry"],
+  "spatial_layout": {
+    "sink_wall": "top",
+    "range_wall": "right",
+    "refrigerator_wall": "left",
+    "pantry_corner": "bottom-left",
+    "island_position": "center",
+    "window_above_sink": true,
+    "main_door_wall": "bottom"
+  },
+  "layout_description": "Detailed 3-4 sentences: exact wall for each appliance, island size/position, doors, window, work triangle.",
+  "blueprint_prompt": "Optional extra generation notes"
 }
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FINAL INTERNAL VALIDATION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Before responding internally verify:
-- no mirrored layout
-- no rotated layout
-- no changed room positions
-- no missing major room
-- all adjacencies preserved
-- all room zones mapped
-- all doors preserved
-- all windows preserved
-- JSON syntax valid
-- blueprint_prompt contains all mandatory phrases
-
-RETURN ONLY JSON.
+Rules for HAND-DRAWN sketches:
+- Read rough pencil/pen lines: outer rectangle = room boundary, inner shapes = cabinets/appliances
+- kitchen_shape: "u-shape" if cabinets on 3 walls; "l-shape" if 2 perpendicular walls; "island" if central island with perimeter cabinets; "straight" if single wall only
+- Preserve sketch orientation: do NOT mirror or rotate — if sink is drawn on top wall, sink_wall must be "top"
+- spatial_layout walls: top, bottom, left, right (relative to sketch as viewed)
+- Estimate width_ft/depth_ft from sketch proportions or written numbers (typical 10-16 ft)
+- elements: only what is visible or clearly implied in the sketch
+- If sketch is messy, infer standard kitchen logic but keep positions from sketch
 ''';
+
     final response = await _dio.post(
-      '$_baseUrl/models/gemini-2.5-flash:generateContent?key=$apiKey',
+      '$_baseUrl/models/$analysisModel:generateContent?key=$apiKey',
       data: {
         'contents': [
           {
@@ -362,59 +106,431 @@ RETURN ONLY JSON.
           },
         ],
         'generationConfig': {
-          'temperature': 0.2,
-          'topK': 32,
-          'topP': 1,
-          'responseMimeType': 'application/json',
+          'temperature': 0.1,
+          'topK': 16,
+          'topP': 0.9,
         },
       },
     );
 
-    final text =
+    final rawText =
         response.data['candidates'][0]['content']['parts'][0]['text'] as String;
 
-    // Extract only the JSON object between the first '{' and last '}'
-    final start = text.indexOf('{');
-    final end = text.lastIndexOf('}');
-    if (start == -1 || end == -1 || end < start) {
-      throw Exception('Invalid JSON response returned by Gemini analysis.');
-    }
-    final cleaned = text.substring(start, end + 1);
-
-    final json = jsonDecode(cleaned) as Map<String, dynamic>;
-    return BlueprintAnalysis.fromJson(json);
+    // ── Robust JSON extraction ────────────────────────────────────
+    final analysis = _parseAnalysisJson(rawText);
+    return analysis;
   }
 
-  /// Step 2: Generate a professional blueprint image using Imagen via Gemini
-  Future<Uint8List> generateBlueprintImage(String blueprintPrompt) async {
-    if (apiKey.isEmpty || apiKey == 'YOUR_GEMINI_API_KEY') {
-      throw Exception('Please enter a valid Gemini API Key first.');
+  BlueprintAnalysis _parseAnalysisJson(String rawText) {
+    // Strip markdown fences if present
+    String cleaned = rawText
+        .replaceAll(RegExp(r'```json\s*'), '')
+        .replaceAll(RegExp(r'```\s*'), '')
+        .trim();
+
+    // Find JSON boundaries
+    final start = cleaned.indexOf('{');
+    final end = cleaned.lastIndexOf('}');
+    if (start == -1 || end == -1 || end <= start) {
+      throw Exception(
+          'Could not parse AI response as JSON. Raw: ${rawText.substring(0, rawText.length.clamp(0, 200))}');
     }
 
-    print('Generating blueprint image using Imagen 4...');
-    final response = await _dio.post(
-      '$_baseUrl/models/imagen-4.0-generate-001:predict?key=$apiKey',
-      data: {
-        'instances': [
-          {'prompt': blueprintPrompt},
-        ],
-        'parameters': {
-          'sampleCount': 1,
-          'aspectRatio': '1:1',
-          'outputMimeType': 'image/jpeg',
-        },
-      },
+    cleaned = cleaned.substring(start, end + 1);
+
+    Map<String, dynamic> json;
+    try {
+      json = jsonDecode(cleaned) as Map<String, dynamic>;
+    } catch (e) {
+      throw Exception('JSON parse error: $e\nRaw: ${cleaned.substring(0, cleaned.length.clamp(0, 300))}');
+    }
+
+    // Build the blueprint_prompt with professional floor plan style injected
+    final layoutDesc = json['layout_description'] as String? ?? '';
+    final kitchenShape = (json['kitchen_shape'] as String? ?? 'island').toLowerCase();
+    final widthFt = json['width_ft'] as String? ?? '14';
+    final depthFt = json['depth_ft'] as String? ?? '12';
+    final elementsList = (json['elements'] as List? ?? []).map((e) => e.toString()).toList();
+
+    final spatialLayout = json['spatial_layout'] is Map
+        ? Map<String, dynamic>.from(json['spatial_layout'] as Map)
+        : <String, dynamic>{};
+
+    // Craft a highly detailed, targeted blueprint prompt
+    final blueprintPrompt = _buildBlueprintPrompt(
+      kitchenShape: kitchenShape,
+      widthFt: widthFt,
+      depthFt: depthFt,
+      elements: elementsList,
+      layoutDescription: layoutDesc,
+      spatialLayout: spatialLayout,
+      extraPrompt: json['blueprint_prompt'] as String? ?? '',
     );
 
-    print('Imagen 4 API Response Status: ${response.statusCode}');
-    final predictions = response.data['predictions'] as List?;
-    if (predictions != null && predictions.isNotEmpty) {
-      print('Successfully retrieved blueprint image.');
-      final base64Image = predictions[0]['bytesBase64Encoded'] as String;
-      return base64Decode(base64Image);
+    // Build measurements from structured fields
+    final measurements = <Map<String, dynamic>>[];
+    if (json['measurements'] != null) {
+      for (final m in (json['measurements'] as List)) {
+        if (m is Map) measurements.add(Map<String, dynamic>.from(m));
+      }
+    }
+    if (measurements.isEmpty) {
+      measurements.addAll([
+        {'label': 'Overall Width', 'value': widthFt, 'unit': 'ft'},
+        {'label': 'Overall Depth', 'value': depthFt, 'unit': 'ft'},
+      ]);
     }
 
-    throw Exception('No image returned from Gemini image generation.');
+    // Build elements list including kitchen_shape
+    final elements = [...elementsList];
+    if (!elements.any((e) => e.toLowerCase().contains('shape') || e.toLowerCase() == kitchenShape)) {
+      elements.insert(0, kitchenShape);
+    }
+
+    return BlueprintAnalysis(
+      title: json['title'] as String? ?? 'Kitchen Floor Plan',
+      description: json['description'] as String? ?? layoutDesc,
+      measurements: measurements
+          .map((m) => Measurement.fromJson(m))
+          .toList(),
+      elements: elements,
+      blueprintPrompt: blueprintPrompt,
+    );
+  }
+
+  String _buildBlueprintPrompt({
+    required String kitchenShape,
+    required String widthFt,
+    required String depthFt,
+    required List<String> elements,
+    required String layoutDescription,
+    Map<String, dynamic> spatialLayout = const {},
+    required String extraPrompt,
+  }) {
+    final elementStr = elements.isNotEmpty
+        ? elements.map((e) => e.toUpperCase()).join(', ')
+        : 'DISHWASHER, SINK, REFRIGERATOR, RANGE, ISLAND, PANTRY';
+
+    final sinkWall = spatialLayout['sink_wall'] ?? 'top';
+    final rangeWall = spatialLayout['range_wall'] ?? 'right';
+    final fridgeWall = spatialLayout['refrigerator_wall'] ?? 'left';
+    final pantryCorner = spatialLayout['pantry_corner'] ?? 'bottom-left';
+    final islandPos = spatialLayout['island_position'] ?? 'center';
+    final windowAboveSink = spatialLayout['window_above_sink'] == true;
+    final doorWall = spatialLayout['main_door_wall'] ?? 'bottom';
+
+    final spatialBlock = '''
+SPATIAL LAYOUT (preserve from hand-drawn sketch — do not rotate or mirror):
+- Room: ${widthFt}'-0" wide × ${depthFt}'-0" deep, $kitchenShape perimeter cabinets
+- SINK + DISHWASHER on $sinkWall wall${windowAboveSink ? ', wide WINDOW centered above SINK' : ''}
+- RANGE (5-6 burner cooktop) on $rangeWall wall, centered on counter run
+- REFRIGERATOR on $fridgeWall wall
+- PANTRY in $pantryCorner corner with swing door arc
+- ISLAND at $islandPos with 3 bar stool circles on seating side
+- Main entry door on $doorWall wall with swing arc
+- Dashed WORK TRIANGLE connecting sink, refrigerator, and range centers
+''';
+
+    final extra = extraPrompt.trim().isNotEmpty ? '\n$extraPrompt\n' : '';
+
+    return '''
+Transform the hand-drawn kitchen sketch into a professional 2D architectural KITCHEN FLOOR PLAN identical to a high-end interior design CAD presentation document.
+
+REFERENCE STYLE (match exactly):
+- Pure white background, top-down orthographic view only (no 3D, no perspective)
+- Bold title "KITCHEN FLOOR PLAN" centered at top in black sans-serif
+- Dimension strings on TOP edge (${widthFt}'-0") and RIGHT edge (${depthFt}'-0") with extension lines and arrows
+- Bottom-left: compass rose with "N" arrow + "SCALE: 1/2" = 1'-0""
+- Walls: thick dark grey/charcoal filled outlines
+- Floor: warm tan/beige horizontal wood plank texture inside room
+- Countertops: light cream speckled quartz/granite fill on all cabinet runs and island
+- Cabinet runs: thin black double-lines parallel to each wall
+
+$spatialBlock
+
+DETAILED LAYOUT:
+$layoutDescription
+
+LABELED ELEMENTS (uppercase sans-serif text on drawing):
+$elementStr
+
+APPLIANCE SYMBOLS (draw precisely):
+- SINK: double-basin undermount (two grey squares side by side), faucet dot, label "SINK"
+- DISHWASHER: grey appliance box left of sink, label "DISHWASHER"
+- REFRIGERATOR: tall grey box with handle, label "REFRIGERATOR"
+- RANGE: dark cooktop with 5-6 circular burner marks, label "RANGE"
+- ISLAND: large cream countertop rectangle, label "ISLAND", 3 stool circles
+- PANTRY: closet with shelves lines, swing door arc, label "PANTRY"
+- WINDOW: double-line opening on sink wall if applicable
+
+CAD DETAILS:
+- Upper cabinets: dashed lines above counter runs
+- Work triangle: grey dashed lines sink↔fridge↔range
+- All doors: quarter-circle swing arcs
+$extra
+CRITICAL: Keep the same appliance positions as the hand-drawn sketch. Output only the finished floor plan — no sketch lines, no pencil marks, no watermarks, no extra commentary text.
+''';
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // BLUEPRINT IMAGE GENERATION — Imagen 4 (layout from gemini-2.5-flash)
+  // ─────────────────────────────────────────────────────────────────
+
+  Future<Uint8List> generateBlueprintImage(
+    String blueprintPrompt, {
+    File? sketchFile, // layout already analysed via [analysisModel]
+  }) async {
+    _assertApiKey();
+    // Sketch layout is read by [analysisModel]; Imagen 4 draws the CAD plan.
+    return _generateImageViaImagen(
+      _truncateForImagen(blueprintPrompt),
+      aspectRatio: '4:3',
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // AI KITCHEN 3D RENDER — Imagen 4
+  // ─────────────────────────────────────────────────────────────────
+
+  Future<Uint8List> generateKitchenRender({
+    required String kitchenShape,
+    required String finish,
+    List<String> accessories = const [],
+    String? viewAngle,
+    String? additionalContext,
+  }) async {
+    _assertApiKey();
+
+    final accStr = accessories.isEmpty
+        ? ''
+        : ', including ${accessories.take(5).join(', ')}';
+
+    final viewStr = viewAngle != null ? ', $viewAngle camera angle' : '';
+    final contextStr = additionalContext != null ? ' $additionalContext' : '';
+
+    final prompt = '''
+Photorealistic 3D interior architectural render of a high-end modern $kitchenShape modular kitchen.$contextStr
+Cabinet finish: $finish laminate$accStr.
+IMPORTANT: Single wide-angle overview shot of the ENTIRE kitchen in one frame — show full room from floor to ceiling, all walls and island visible, straight-on or slight three-quarter view. Do not crop to a detail or single wall.
+Style: contemporary Indian modular kitchen, premium quality, similar to image 1 reference (L-Shape Kitchen, Matte Finish).
+Lighting: warm ambient with under-cabinet LED strips, recessed ceiling lights.
+Materials: quartz countertop, stainless steel appliances, clean handle-less cabinet fronts$viewStr.
+Quality: professional architectural visualization, magazine cover quality, 
+8K ultra-realistic render, perfect composition, no people.
+Color palette: neutral whites and warm wood tones, dark wood grain accents.
+Absolutely no text, watermarks, or overlays in the image.
+''';
+
+    return _generateKitchenImageWithFallback(prompt, aspectRatio: '4:3');
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // ZONE CLOSE-UP — focused render of a kitchen zone
+  // ─────────────────────────────────────────────────────────────────
+
+  Future<Uint8List> generateZoneCloseup({
+    required String kitchenShape,
+    required String finish,
+    required String zoneLabel,
+    required String zonePrompt,
+    List<String> accessoryNames = const [],
+    String? additionalContext,
+  }) async {
+    _assertApiKey();
+
+    final accStr = accessoryNames.isEmpty
+        ? ''
+        : '. Showing: ${accessoryNames.join(', ')}';
+    final contextStr =
+        additionalContext != null ? ' Context: $additionalContext.' : '';
+
+    final prompt = '''
+Close-up interior shot of the $zoneLabel area of a $kitchenShape modular kitchen.$contextStr
+$zonePrompt$accStr.
+Camera angle: eye-level, focused tightly on the $zoneLabel zone.
+Cabinet finish: $finish laminate. Style: contemporary Indian modular kitchen, premium quality.
+Lighting: warm ambient with under-cabinet LED strips.
+Materials: quartz countertop, stainless steel appliances, clean handle-less cabinet fronts.
+Quality: professional architectural visualization, magazine cover quality, 8K ultra-realistic.
+Absolutely no text, watermarks, labels, or numbered overlays in the image.
+''';
+
+    return _generateKitchenImageWithFallback(prompt, aspectRatio: '4:3');
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // FINAL KITCHEN DESIGN — overview with all placed accessories
+  // ─────────────────────────────────────────────────────────────────
+
+  Future<Uint8List> generateFinalKitchenDesign({
+    required String kitchenShape,
+    required String finish,
+    required List<String> placements,
+    String? additionalContext,
+  }) async {
+    _assertApiKey();
+
+    final placementStr = placements.isEmpty
+        ? 'standard modular fittings'
+        : placements.join('; ');
+    final contextStr =
+        additionalContext != null ? ' $additionalContext.' : '';
+
+    final prompt = '''
+Photorealistic 3D interior architectural render of a complete $kitchenShape modular kitchen.$contextStr
+Cabinet finish: $finish laminate.
+All fittings installed and visible at their correct positions:
+$placementStr.
+Sink zone: top-center wall with undermount sink and faucet.
+Cooktop zone: right wall with built-in hob and chimney hood.
+Island/counter: center prep area with premium countertop.
+Storage: left wall refrigerator and pantry pull-outs.
+Upper cabinets: microwave niche and wall storage.
+Lower cabinets: drawers with LED under-cabinet lighting, SS handles, soft-close hinges.
+Style: contemporary Indian modular kitchen, premium quality.
+Lighting: warm ambient with under-cabinet LED strips, recessed ceiling lights.
+Materials: quartz countertop, stainless steel appliances, clean handle-less cabinet fronts.
+Wide-angle overview camera, eye-level, showing entire kitchen layout.
+Quality: professional architectural visualization, magazine cover quality, 8K ultra-realistic.
+Absolutely no text, watermarks, or numbered overlays in the image.
+''';
+
+    return _generateKitchenImageWithFallback(prompt, aspectRatio: '4:3');
+  }
+
+  Future<Uint8List> _generateKitchenImageWithFallback(
+    String prompt, {
+    String aspectRatio = '4:3',
+  }) async {
+    return _generateImageViaImagen(
+      _truncateForImagen(prompt),
+      aspectRatio: aspectRatio,
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Image Generation — Imagen 4
+  // ─────────────────────────────────────────────────────────────────
+
+  /// Generate image via Imagen 4 (:predict endpoint).
+  Future<Uint8List> _generateImageViaImagen(
+    String prompt, {
+    String aspectRatio = '1:1',
+  }) async {
+    Object? lastError;
+    for (final model in _imagenModels) {
+      try {
+        final response = await _retryOnTransient(() => _dio.post(
+          '$_baseUrl/models/$model:predict?key=$apiKey',
+          data: {
+            'instances': [
+              {'prompt': prompt},
+            ],
+            'parameters': {
+              'sampleCount': 1,
+              'aspectRatio': aspectRatio,
+            },
+          },
+        ));
+        return _extractImageFromImagenResponse(response.data, model);
+      } catch (e) {
+        lastError = e;
+        if (_isModelUnavailable(e)) continue;
+      }
+    }
+    throw lastError ?? Exception('No Imagen model available');
+  }
+
+  Uint8List _extractImageFromImagenResponse(
+    Map<String, dynamic> data,
+    String model,
+  ) {
+    final predictions = data['predictions'] as List?;
+    if (predictions == null || predictions.isEmpty) {
+      throw Exception('No predictions from $model');
+    }
+
+    final first = predictions[0];
+    if (first is Map) {
+      final b64 = first['bytesBase64Encoded'] as String?;
+      if (b64 != null) return base64Decode(b64);
+    }
+
+    throw Exception('No image bytes from $model');
+  }
+
+  bool _isModelUnavailable(Object e) {
+    if (e is DioException) {
+      final code = e.response?.statusCode;
+      return code == 404 || code == 403;
+    }
+    final msg = e.toString().toLowerCase();
+    return msg.contains('404') ||
+        msg.contains('not found') ||
+        msg.contains('not supported');
+  }
+
+  /// Imagen prompts are limited to ~480 tokens — keep fallback prompts short.
+  String _truncateForImagen(String prompt) {
+    const maxLen = 1800;
+    if (prompt.length <= maxLen) return prompt;
+    return '${prompt.substring(0, maxLen)}…';
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Retry logic for transient errors (503, 429, timeouts)
+  // ─────────────────────────────────────────────────────────────────
+
+  Future<Response> _retryOnTransient(
+    Future<Response> Function() request, {
+    int maxRetries = 2,
+  }) async {
+    int attempt = 0;
+    while (true) {
+      try {
+        return await request();
+      } on DioException catch (e) {
+        attempt++;
+        final statusCode = e.response?.statusCode;
+        final isRetryable = statusCode == 503 ||
+            statusCode == 429 ||
+            e.type == DioExceptionType.connectionTimeout ||
+            e.type == DioExceptionType.receiveTimeout;
+
+        if (!isRetryable || attempt > maxRetries) {
+          print('*** DioException ***:');
+          print('uri: ${e.requestOptions.uri}');
+          print('$e');
+          if (e.response != null) {
+            print('*** Response ***');
+            print('uri: ${e.response?.requestOptions.uri}');
+            print('statusCode: ${e.response?.statusCode}');
+            print('statusMessage: ${e.response?.statusMessage}');
+            print('headers:');
+            e.response?.headers.forEach((name, values) {
+              print(' $name: ${values.join(", ")}');
+            });
+          }
+          rethrow;
+        }
+
+        // Exponential backoff: 2s, 4s
+        final delay = Duration(seconds: 2 * attempt);
+        print('*** Retrying in ${delay.inSeconds}s (attempt $attempt/$maxRetries) after $statusCode ***');
+        await Future.delayed(delay);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Helpers
+  // ─────────────────────────────────────────────────────────────────
+
+  void _assertApiKey() {
+    if (apiKey.isEmpty || apiKey == 'YOUR_GEMINI_API_KEY_HERE') {
+      throw Exception(
+          'No Gemini API key found. Add GEMINI_API_KEY to your .env file.');
+    }
   }
 
   String _getMimeType(String path) {

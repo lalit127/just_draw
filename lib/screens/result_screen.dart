@@ -3,7 +3,9 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../providers/blueprint_provider.dart';
+import '../providers/kitchen_design_provider.dart';
 import '../widgets/image_comparison_slider.dart';
+import 'kitchen_type_screen.dart';
 
 class ResultScreen extends ConsumerWidget {
   const ResultScreen({super.key});
@@ -46,11 +48,8 @@ class ResultScreen extends ConsumerWidget {
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(color: Colors.black12),
                       ),
-                      child: const Icon(
-                        Icons.arrow_back,
-                        color: Colors.black87,
-                        size: 18,
-                      ),
+                      child: const Icon(Icons.arrow_back,
+                          color: Colors.black87, size: 18),
                     ),
                   ),
                   const SizedBox(width: 14),
@@ -88,9 +87,9 @@ class ResultScreen extends ConsumerWidget {
               ),
             ).animate().fadeIn(duration: 300.ms),
 
-            // ── Comparison Slider ────────────────────────────────────
+            // ── Comparison Slider ─────────────────────────────────────
             Expanded(
-              flex: 6,
+              flex: 5,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: ClipRRect(
@@ -109,17 +108,17 @@ class ResultScreen extends ConsumerWidget {
               ),
             ).animate().fadeIn(delay: 50.ms, duration: 400.ms),
 
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
 
-            // ── Analysis Details ────────────────────────────────────
+            // ── Analysis Details ──────────────────────────────────────
             Expanded(
-              flex: 4,
+              flex: 3,
               child: SingleChildScrollView(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Measurements Row
+                    // Measurements
                     if (analysis != null && analysis.measurements.isNotEmpty) ...[
                       Text(
                         'MEASUREMENTS',
@@ -135,45 +134,20 @@ class ResultScreen extends ConsumerWidget {
                         scrollDirection: Axis.horizontal,
                         child: Row(
                           children: analysis.measurements
-                              .map(
-                                (m) => Padding(
-                                  padding: const EdgeInsets.only(right: 10),
-                                  child: _MeasurementChip(
-                                    label: m.label,
-                                    value: m.display,
-                                  ),
-                                ),
-                              )
+                              .map((m) => Padding(
+                            padding: const EdgeInsets.only(right: 10),
+                            child: _MeasurementChip(
+                              label: m.label,
+                              value: m.display,
+                            ),
+                          ))
                               .toList(),
                         ),
                       ),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 16),
                     ],
 
-                    // Description
-                    if (analysis != null && analysis.description.isNotEmpty) ...[
-                      Text(
-                        'ANALYSIS',
-                        style: GoogleFonts.spaceMono(
-                          color: Colors.black38,
-                          fontSize: 9,
-                          letterSpacing: 2,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        analysis.description,
-                        style: GoogleFonts.spaceGrotesk(
-                          color: Colors.black87,
-                          fontSize: 13,
-                          height: 1.5,
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                    ],
-
-                    // Elements
+                    // Detected elements
                     if (analysis != null && analysis.elements.isNotEmpty) ...[
                       Text(
                         'DETECTIONS',
@@ -192,12 +166,67 @@ class ResultScreen extends ConsumerWidget {
                             .map((e) => _ElementTag(label: e))
                             .toList(),
                       ),
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 16),
                     ],
                   ],
                 ),
               ),
             ).animate().fadeIn(delay: 200.ms, duration: 400.ms),
+
+            // ── START KITCHEN DESIGN CTA ─────────────────────────────
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                  16, 0, 16, 12 + MediaQuery.of(context).padding.bottom),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ElevatedButton(
+                    onPressed: () {
+                      // Carry over the blueprint analysis and image to the kitchen design flow
+                      if (analysis != null) {
+                        ref.read(kitchenDesignProvider.notifier).startDesignFromBlueprint(
+                          analysis, 
+                          state.blueprintImageBytes!,
+                        );
+                      } else {
+                        ref.read(kitchenDesignProvider.notifier).reset();
+                      }
+                      
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const KitchenTypeScreen(),
+                        ),
+                      );
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.black,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 15),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      elevation: 0,
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.kitchen_outlined, size: 16),
+                        const SizedBox(width: 8),
+                        Text(
+                          'START KITCHEN DESIGN',
+                          style: GoogleFonts.spaceMono(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.5),
+                        ),
+                        const SizedBox(width: 8),
+                        const Icon(Icons.arrow_forward, size: 16),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ).animate().fadeIn(delay: 300.ms, duration: 400.ms),
           ],
         ),
       ),
@@ -280,18 +309,19 @@ class _NewSketchButton extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-          color: Colors.black,
+          color: const Color(0xFFF7F7FA),
           borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.black12),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.add, color: Colors.white, size: 14),
+            const Icon(Icons.refresh, color: Colors.black54, size: 14),
             const SizedBox(width: 4),
             Text(
               'New',
               style: GoogleFonts.spaceMono(
-                color: Colors.white,
+                color: Colors.black54,
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
               ),
